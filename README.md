@@ -19,12 +19,20 @@ Choose a hosted provider or an OpenAI-compatible model server. API keys are hidd
 After setup, open a new terminal and run:
 
 ```sh
-jaiharness tui
+jaicli
 ```
 
-Setup also prints the browser address. On a remote machine, use the printed SSH forwarding example. The shared Host keeps running until you stop it with `jaiharness host stop`.
+`jaicli` opens terminal chat and accepts the same arguments as `jaiharness tui`. Use `jaiharness` for setup and Host management. Setup also prints the browser address. On a remote machine, use the printed SSH forwarding example. The shared Host keeps running until you stop it with `jaiharness host stop`.
 
 ## Options and updates
+
+If you already installed and `jaicli` is missing, run:
+
+```sh
+curl -fsSL https://jaysteelmind.github.io/jaiharness-install/install.sh | bash -s -- --repair-commands
+```
+
+Then open a new terminal and run `jaicli`, or use `~/.local/bin/jaicli` immediately. Repair adds the launch commands without downloading the application, restarting the Host or changing your settings. It requires an existing complete installation. An unrelated `jaicli` is preserved: normal installation prints a notice and continues; command repair exits with an error. Use `jaiharness tui` when keeping that command.
 
 For unattended software installation without model setup or shell-file changes:
 
@@ -34,7 +42,7 @@ curl -fsSL https://jaysteelmind.github.io/jaiharness-install/install.sh | bash -
 
 Run `~/.local/bin/jaiharness setup` later to configure the model. `--install-system-deps` permits installation of missing system packages when needed; sudo may still ask for a password.
 
-Stop the Host with its existing launcher before rerunning the installer to update or repair the application. Settings and credentials are preserved. Installed software lives under `~/.local/share/jaiharness`; the command is `~/.local/bin/jaiharness`. User data lives separately in `~/.jai`, or `JAI_HOME` when configured.
+Stop the Host with its existing launcher before rerunning the installer to update or repair the application. Settings and credentials are preserved. Installed software lives under `~/.local/share/jaiharness`; the commands are `~/.local/bin/jaiharness` and `~/.local/bin/jaicli`. User data lives separately in `~/.jai`, or `JAI_HOME` when configured.
 
 Old versions and failed-attempt diagnostics remain available and can use about 1 GB per attempt. Remove unwanted versions only after confirming their processes have stopped. An uncatchable interruption can leave `.install-lock`; inspect its PID before removing the stale lock. The installer refuses unrelated command paths. If setup reports that an existing data home needs adoption, stop its legacy Host processes, run `jaiharness tui --adopt-home` once, then rerun `jaiharness setup`. The installed application is retained when setup cannot finish.
 

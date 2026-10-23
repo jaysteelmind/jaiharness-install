@@ -85,7 +85,9 @@ cleanup() {
     rmdir "$prefix/.install-lock"
   fi
   if [ "$status" -ne 0 ] && [ -n "$candidate" ]; then
-    if [ "$installed" = yes ]; then
+    if [ "${repair_commands:-no}" = yes ]; then
+      printf 'Command repair did not complete; resolve the error above and rerun with --repair-commands.\n' >&2
+    elif [ "$installed" = yes ]; then
       printf 'jaiharness is installed; setup or shell configuration is incomplete. Run: %s setup\n' "$command_path" >&2
     else
       printf 'Installation files and diagnostics retained at: %s\n' "$candidate" >&2
@@ -134,27 +136,45 @@ NODE
 }
 
 publish_install() {
-  "$candidate/node/bin/node" --input-type=module - "$prefix" "$candidate" "$command_path" <<'NODE'
-import { lstatSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from 'node:fs';
+  "$candidate/node/bin/node" --input-type=module - "$prefix" "$candidate" "$command_path" "$chat_path" "$repair_commands" "$chat_available" <<'NODE'
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-const [root, candidate, command] = process.argv.slice(2);
-const target = join(root, 'current/bin/jaiharness');
+const [root, candidate, command, chat, repair, chatAvailable] = process.argv.slice(2);
 function exists(path) { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } }
-const entry = exists(command);
-if (entry && (!entry.isSymbolicLink() || readlinkSync(command) !== target)) throw new Error(`Refusing to replace ${command}`);
+const commands = [[command, join(root, 'current/bin/jaiharness')]];
+if (chatAvailable === 'yes') commands.push([chat, join(root, 'bin/jaicli')]);
+for (const [path, target] of commands) {
+  const entry = exists(path);
+  if (entry && (!entry.isSymbolicLink() || readlinkSync(path) !== target)) throw new Error(`Refusing to replace ${path}`);
+}
 const current = join(root, 'current');
 const previous = exists(current);
 if (previous && !previous.isSymbolicLink()) throw new Error(`Refusing to replace ${current}`);
+if (repair === 'yes' && (!previous || realpathSync(current) !== candidate)) throw new Error('The active installation changed; retry command repair.');
+if (chatAvailable === 'yes') {
+  mkdirSync(join(root, 'bin'), { recursive: true });
+  const launcher = join(root, 'bin/jaicli');
+  const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+  const script = `#!/usr/bin/env bash\nexec ${quote(join(root, 'current/bin/jaiharness'))} tui "$@"\n`;
+  if (!exists(launcher) || readFileSync(launcher, 'utf8') !== script) {
+    const next = `${launcher}.next-${process.pid}`;
+    writeFileSync(next, script, { mode: 0o755, flag: 'wx' });
+    try { renameSync(next, launcher); } finally { if (exists(next)) unlinkSync(next); }
+  }
+  chmodSync(launcher, 0o755);
+}
 const pending = join(root, `.current-next-${basename(candidate)}`);
-symlinkSync(candidate, pending);
+const created = [];
+if (repair !== 'yes') symlinkSync(candidate, pending);
 try {
-  if (!entry) symlinkSync(target, command);
-  renameSync(pending, current);
+  for (const [path, target] of commands) {
+    if (!exists(path)) { symlinkSync(target, path); created.push([path, target]); }
+  }
+  if (repair !== 'yes') renameSync(pending, current);
 } catch (error) {
-  unlinkSync(pending);
-  if (!entry) {
-    const created = exists(command);
-    if (created?.isSymbolicLink() && readlinkSync(command) === target) unlinkSync(command);
+  if (repair !== 'yes' && exists(pending)) unlinkSync(pending);
+  for (const [path, target] of created) {
+    if (exists(path)?.isSymbolicLink() && readlinkSync(path) === target) unlinkSync(path);
   }
   throw error;
 }
@@ -181,16 +201,20 @@ main() {
   local archive_hash='23dad59eb01e7b07558612ffe862934d952c00e5e501af69d525a78afdeca55c'
   local release_version='0.1.0-rc.7'
   local node_version=v24.22.1
-  local prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no
-  local command_path="$HOME/.local/bin/jaiharness" terminal=no modify_path=yes skip_setup=no install_system_deps=no start_dir=$PWD
+  # Bash 5 can unwind main's locals before its EXIT trap after a failed command.
+  prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no
+  command_path="$HOME/.local/bin/jaiharness" repair_commands=no
+  local chat_path="$HOME/.local/bin/jaicli" chat_available=yes
+  local terminal=no modify_path=yes skip_setup=no install_system_deps=no start_dir=$PWD
   local os arch node_hash node_archive reply
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --skip-setup) skip_setup=yes ;;
       --no-modify-path) modify_path=no ;;
       --install-system-deps) install_system_deps=yes ;;
+      --repair-commands) repair_commands=yes ;;
       --help|-h)
-        printf 'Usage: bash install.sh [--skip-setup] [--no-modify-path] [--install-system-deps]\nInstalls jaiharness for your account; JAI_INSTALL_DIR overrides the installation directory.\n'
+        printf 'Usage: bash install.sh [--skip-setup] [--no-modify-path] [--install-system-deps] [--repair-commands]\nInstalls jaiharness and jaicli for your account; --repair-commands repairs existing launch commands without downloading or restarting. JAI_INSTALL_DIR overrides the installation directory.\n'
         return ;;
       *) fail "Unknown option: $1" ;;
     esac
@@ -201,16 +225,19 @@ main() {
   [ "$prefix" != / ] && [ "$prefix" != "$HOME" ] || fail 'Choose a dedicated installation directory.'
   platform
   if ( : </dev/tty ) 2>/dev/null; then terminal=yes; fi
-  for utility in curl tar gzip; do
-    command -v "$utility" >/dev/null 2>&1 || system_tools
-    command -v "$utility" >/dev/null 2>&1 || fail "Required command is unavailable: $utility"
-  done
-  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then system_tools; fi
+  if [ "$repair_commands" = no ]; then
+    for utility in curl tar gzip; do
+      command -v "$utility" >/dev/null 2>&1 || system_tools
+      command -v "$utility" >/dev/null 2>&1 || fail "Required command is unavailable: $utility"
+    done
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then system_tools; fi
+  fi
   [ ! -L "$prefix" ] || fail 'The installation directory must not be a symbolic link.'
   if [ -e "$prefix" ]; then
     [ -f "$prefix/.jaiharness-installer" ] && [ "$(cat "$prefix/.jaiharness-installer")" = 1 ] \
       || fail "Refusing to adopt an unrelated directory: $prefix"
   else
+    [ "$repair_commands" = no ] || fail 'No installer-owned installation exists. Run the installer without --repair-commands first.'
     mkdir -p "$prefix"
     printf '1\n' >"$prefix/.jaiharness-installer"
   fi
@@ -225,7 +252,28 @@ main() {
     [ -L "$command_path" ] && [ "$(readlink "$command_path")" = "$prefix/current/bin/jaiharness" ] \
       || fail "An unrelated command already exists: $command_path"
   fi
+  if { [ -e "$chat_path" ] || [ -L "$chat_path" ]; } \
+    && { [ ! -L "$chat_path" ] || [ "$(readlink "$chat_path")" != "$prefix/bin/jaicli" ]; }; then
+    [ "$repair_commands" = no ] || fail "An unrelated command already exists: $chat_path. It was left unchanged; use jaiharness tui."
+    printf 'jaicli already exists and was left unchanged; use jaiharness tui.\n'
+    chat_available=no
+  fi
   mkdir -p "$prefix/versions" "$HOME/.local/bin"
+  if [ "$repair_commands" = yes ]; then
+    [ -L "$prefix/current" ] || fail 'No active installer-owned version exists. Run the full installer first.'
+    candidate=$(cd "$prefix/current" && pwd -P) || fail 'The active installation directory is unavailable.'
+    local versions
+    versions=$(cd "$prefix/versions" && pwd -P)
+    [ "${candidate%/*}" = "$versions" ] && [ -x "$candidate/node/bin/node" ] && [ -x "$candidate/bin/jaiharness" ] \
+      || fail 'The active version is not a complete installer-owned installation. Run the full installer to repair it.'
+    installed=yes
+    publish_install
+    umask "$caller_umask"
+    configure_path
+    printf 'Commands repaired.\nChat command: %s\n' "$chat_path"
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Open a new terminal to use jaicli by name.\n' ;; esac
+    cleanup
+  fi
   candidate=$(mktemp -d "$prefix/versions/$release_version.XXXXXXXX")
   mkdir "$candidate/downloads" "$candidate/node"
   printf '{"private":true}\n' >"$candidate/package.json"
@@ -289,6 +337,7 @@ NODE
   cd "$start_dir"
   say "jaiharness $release_version installed"
   printf 'Command: %s\n' "$command_path"
+  if [ "$chat_available" = yes ]; then printf 'Chat command: %s\n' "$chat_path"; fi
   local resolved_command
   resolved_command=$(command -v jaiharness || true)
   if [ -n "$resolved_command" ] && [ "$resolved_command" != "$command_path" ]; then
