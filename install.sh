@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# Release preparation embeds the archive URL and digest. Keep main last so a truncated pipe cannot install.
+
+fail() { printf '\nInstallation stopped: %s\n' "$*" >&2; exit 1; }
+say() { printf '\n==> %s\n' "$*"; }
+
+download() {
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 20 --max-time 900 --retry 2 --output "$2" "$1" </dev/null
+}
+
+check_sha256() {
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$1")
+  else
+    actual=$(shasum -a 256 "$1")
+  fi
+  [ "${actual%% *}" = "$2" ] || fail "Checksum mismatch for ${1##*/}; no downloaded code was run."
+}
+
+at_least() {
+  local major=${1%%.*} rest=${1#*.} minimum_major=$2 minimum_minor=$3
+  local minor=${rest%%.*}
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  [ "$major" -gt "$minimum_major" ] || { [ "$major" -eq "$minimum_major" ] && [ "$minor" -ge "$minimum_minor" ]; }
+}
+
+platform() {
+  case $(uname -s) in
+    Darwin)
+      os=darwin
+      at_least "$(sw_vers -productVersion)" 13 5 || fail 'macOS 13.5 or later is required.'
+      ;;
+    Linux)
+      os=linux
+      local libc
+      libc=$(getconf GNU_LIBC_VERSION 2>/dev/null) || fail 'This installer requires glibc Linux; Alpine/musl is not supported.'
+      at_least "${libc##* }" 2 28 || fail 'glibc 2.28 or later is required.'
+      at_least "$(uname -r)" 4 18 || fail 'Linux kernel 4.18 or later is required.'
+      ;;
+    *) fail 'Use Linux or macOS. On Windows, run this command inside WSL2.' ;;
+  esac
+  case $(uname -m) in
+    x86_64|amd64) arch=x64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) fail 'Only 64-bit Intel/AMD and ARM64 systems are supported.' ;;
+  esac
+  if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
+}
+
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
+}
+
+system_tools() {
+  local reply
+  if [ "$install_system_deps" != yes ]; then
+    [ "$terminal" = yes ] || fail 'System build tools are missing. Rerun with --install-system-deps to install them.'
+    printf 'Install missing system tools using your OS package manager? [y/N] ' >/dev/tty
+    IFS= read -r reply </dev/tty || fail 'No answer received.'
+    case "$reply" in y|Y|yes|YES) ;; *) fail 'System tools were not installed.' ;; esac
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || fail 'sudo is required to install system packages.'
+  fi
+  if [ "$os" = darwin ]; then
+    xcode-select --install || fail 'Install the Xcode Command Line Tools, then rerun this installer.'
+    fail 'Complete the Apple Command Line Tools dialog, then rerun this installer. Your existing installation is unchanged.'
+  elif command -v apt-get >/dev/null 2>&1; then
+    as_root apt-get update </dev/null || fail 'apt-get update failed; correct its error and retry.'
+    as_root apt-get install -y build-essential python3 ca-certificates curl tar gzip coreutils </dev/null || fail 'System package installation failed.'
+  elif command -v dnf >/dev/null 2>&1; then
+    as_root dnf install -y gcc-c++ make python3 ca-certificates curl tar gzip coreutils </dev/null || fail 'System package installation failed.'
+  else
+    fail 'Install Python 3, a C/C++ compiler, make, tar, gzip and a SHA-256 utility with your OS package manager, then rerun.'
+  fi
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [ "$locked" = yes ]; then
+    rm "$prefix/.install-lock/pid"
+    rmdir "$prefix/.install-lock"
+  fi
+  if [ "$status" -ne 0 ] && [ -n "$candidate" ]; then
+    if [ "$installed" = yes ]; then
+      printf 'jaiharness is installed; setup or shell configuration is incomplete. Run: %s setup\n' "$command_path" >&2
+    else
+      printf 'Installation files and diagnostics retained at: %s\n' "$candidate" >&2
+    fi
+  fi
+  exit "$status"
+}
+
+npm_install() {
+  # Explicit flags override inherited npm policies that would omit native runtime requirements.
+  "$candidate/node/bin/node" "$candidate/node/lib/node_modules/npm/bin/npm-cli.js" install \
+    --global=false --prefix "$candidate/app" --ignore-scripts=false --include=optional --include=prod \
+    --workspaces=false --dry-run=false --bin-links=true --no-audit --no-fund "$candidate/downloads/jaiharness.tgz" </dev/null
+}
+
+write_launcher() {
+  mkdir -p "$candidate/bin"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'install_dir=%q\n' "$candidate"
+    printf 'export PATH="$PATH:$install_dir/node/bin:$install_dir/tools/bin"\n'
+    printf 'exec "$install_dir/node/bin/node" "$install_dir/app/node_modules/@jaysteelmind/jaiharness/bin/jaiharness.mjs" "$@"\n'
+  } >"$candidate/bin/jaiharness"
+  chmod 755 "$candidate/bin/jaiharness"
+}
+
+smoke() {
+  "$candidate/node/bin/node" --input-type=module - "$candidate" <<'NODE'
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+const dir = process.argv[2];
+const home = join(dir, 'smoke-home');
+mkdirSync(home, { mode: 0o700 });
+const env = { HOME: home, JAI_HOME: join(home, '.jai'), PATH: `${dir}/node/bin:/usr/bin:/bin`, LANG: 'en_US.UTF-8' };
+const bin = join(dir, 'app/node_modules/@jaysteelmind/jaiharness/bin/jaiharness.mjs');
+const run = args => spawnSync(process.execPath, [bin, ...args], { env, cwd: home, encoding: 'utf8', timeout: 60000 });
+const boot = run(['tui', '--once']);
+const stop = run(['host', 'stop']);
+if (boot.status !== 0 || stop.status !== 0) {
+  process.stderr.write(`${boot.stdout || ''}${boot.stderr || ''}${stop.stdout || ''}${stop.stderr || ''}`);
+  throw new Error('Installed application startup/shutdown check failed; the previous installation was not replaced.');
+}
+rmSync(home, { recursive: true });
+NODE
+}
+
+publish_install() {
+  "$candidate/node/bin/node" --input-type=module - "$prefix" "$candidate" "$command_path" <<'NODE'
+import { lstatSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from 'node:fs';
+import { basename, join } from 'node:path';
+const [root, candidate, command] = process.argv.slice(2);
+const target = join(root, 'current/bin/jaiharness');
+function exists(path) { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } }
+const entry = exists(command);
+if (entry && (!entry.isSymbolicLink() || readlinkSync(command) !== target)) throw new Error(`Refusing to replace ${command}`);
+const current = join(root, 'current');
+const previous = exists(current);
+if (previous && !previous.isSymbolicLink()) throw new Error(`Refusing to replace ${current}`);
+const pending = join(root, `.current-next-${basename(candidate)}`);
+symlinkSync(candidate, pending);
+try {
+  if (!entry) symlinkSync(target, command);
+  renameSync(pending, current);
+} catch (error) {
+  unlinkSync(pending);
+  if (!entry) {
+    const created = exists(command);
+    if (created?.isSymbolicLink() && readlinkSync(command) === target) unlinkSync(command);
+  }
+  throw error;
+}
+NODE
+}
+
+configure_path() {
+  [ "$modify_path" = yes ] || return 0
+  local rc
+  for rc in "$HOME/.profile" "$HOME/.bashrc" "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bash_profile" "$HOME/.bash_login"; do
+    case "$rc" in */.bash_profile|*/.bash_login) [ -f "$rc" ] || continue ;; esac
+    if ! grep -Fq '# jaiharness command path' "$rc" 2>/dev/null; then
+      printf '\n# jaiharness command path\nexport PATH="$HOME/.local/bin:$PATH"\n' >>"$rc"
+    fi
+  done
+}
+
+main() {
+  set -euo pipefail
+  local caller_umask caller_path=$PATH
+  caller_umask=$(umask)
+  umask 077
+  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.7/jaysteelmind-jaiharness-0.1.0-rc.7.tgz'
+  local archive_hash='23dad59eb01e7b07558612ffe862934d952c00e5e501af69d525a78afdeca55c'
+  local release_version='0.1.0-rc.7'
+  local node_version=v24.22.1
+  local prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no
+  local command_path="$HOME/.local/bin/jaiharness" terminal=no modify_path=yes skip_setup=no install_system_deps=no start_dir=$PWD
+  local os arch node_hash node_archive reply
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --skip-setup) skip_setup=yes ;;
+      --no-modify-path) modify_path=no ;;
+      --install-system-deps) install_system_deps=yes ;;
+      --help|-h)
+        printf 'Usage: bash install.sh [--skip-setup] [--no-modify-path] [--install-system-deps]\nInstalls jaiharness for your account; JAI_INSTALL_DIR overrides the installation directory.\n'
+        return ;;
+      *) fail "Unknown option: $1" ;;
+    esac
+    shift
+  done
+  [[ "$archive_hash" =~ ^[a-f0-9]{64}$ ]] || fail 'This is an installer template. Use the installer emitted for a release.'
+  case "$prefix" in /*) ;; *) fail 'JAI_INSTALL_DIR must be an absolute path.' ;; esac
+  [ "$prefix" != / ] && [ "$prefix" != "$HOME" ] || fail 'Choose a dedicated installation directory.'
+  platform
+  if ( : </dev/tty ) 2>/dev/null; then terminal=yes; fi
+  for utility in curl tar gzip; do
+    command -v "$utility" >/dev/null 2>&1 || system_tools
+    command -v "$utility" >/dev/null 2>&1 || fail "Required command is unavailable: $utility"
+  done
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then system_tools; fi
+  [ ! -L "$prefix" ] || fail 'The installation directory must not be a symbolic link.'
+  if [ -e "$prefix" ]; then
+    [ -f "$prefix/.jaiharness-installer" ] && [ "$(cat "$prefix/.jaiharness-installer")" = 1 ] \
+      || fail "Refusing to adopt an unrelated directory: $prefix"
+  else
+    mkdir -p "$prefix"
+    printf '1\n' >"$prefix/.jaiharness-installer"
+  fi
+  mkdir "$prefix/.install-lock" 2>/dev/null || fail "Installer lock exists (PID $(cat "$prefix/.install-lock/pid" 2>/dev/null || printf unknown)). Check that process before removing $prefix/.install-lock and retrying."
+  printf '%s\n' "$$" >"$prefix/.install-lock/pid"
+  locked=yes
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  if [ -e "$command_path" ] || [ -L "$command_path" ]; then
+    [ -L "$command_path" ] && [ "$(readlink "$command_path")" = "$prefix/current/bin/jaiharness" ] \
+      || fail "An unrelated command already exists: $command_path"
+  fi
+  mkdir -p "$prefix/versions" "$HOME/.local/bin"
+  candidate=$(mktemp -d "$prefix/versions/$release_version.XXXXXXXX")
+  mkdir "$candidate/downloads" "$candidate/node"
+  printf '{"private":true}\n' >"$candidate/package.json"
+  cd "$candidate"
+  case "$os-$arch" in
+    darwin-arm64) node_hash=89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7 ;;
+    darwin-x64) node_hash=d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035 ;;
+    linux-arm64) node_hash=33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3 ;;
+    linux-x64) node_hash=eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c ;;
+  esac
+  node_archive="node-$node_version-$os-$arch.tar.gz"
+  say "Installing private Node $node_version ($os/$arch)"
+  download "https://nodejs.org/dist/$node_version/$node_archive" "$candidate/downloads/node.tar.gz"
+  check_sha256 "$candidate/downloads/node.tar.gz" "$node_hash"
+  tar -xzf "$candidate/downloads/node.tar.gz" -C "$candidate/node" --strip-components=1
+  "$candidate/node/bin/node" --version || fail 'The downloaded Node runtime cannot run on this system.'
+  export PATH="$candidate/node/bin:$PATH"
+  say 'Installing pnpm 11.7.0 for plugin management'
+  download 'https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz' "$candidate/downloads/pnpm.tgz"
+  "$candidate/node/bin/node" --input-type=module - "$candidate/downloads/pnpm.tgz" <<'NODE'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+const hash = createHash('sha512').update(readFileSync(process.argv[2])).digest('base64');
+if (hash !== 'GcyFLBIMcSV2DyRD7mvgyltA+fUFmN4aCaHxd1A+AQ5Xwjx3ZG4B52HeWb+HT7IqM5jDOrlpH8E+uUa28PTWIA==') throw new Error('pnpm checksum mismatch');
+NODE
+  mkdir -p "$candidate/tools/pnpm" "$candidate/tools/bin"
+  tar -xzf "$candidate/downloads/pnpm.tgz" -C "$candidate/tools/pnpm" --strip-components=1
+  chmod 755 "$candidate/tools/pnpm/bin/pnpm.cjs"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'node_dir=%q\n' "$candidate/node/bin"
+    printf 'export PATH="$node_dir:$PATH"\n'
+    printf 'exec %q %q "$@"\n' "$candidate/node/bin/node" "$candidate/tools/pnpm/bin/pnpm.cjs"
+  } >"$candidate/tools/bin/pnpm"
+  chmod 755 "$candidate/tools/bin/pnpm"
+  [ "$("$candidate/tools/bin/pnpm" --version)" = 11.7.0 ] || fail 'The installed pnpm version could not be verified.'
+  say "Installing jaiharness $release_version"
+  download "$archive_url" "$candidate/downloads/jaiharness.tgz"
+  check_sha256 "$candidate/downloads/jaiharness.tgz" "$archive_hash"
+  if ! npm_install >"$candidate/install.log" 2>&1; then
+    tail -n 35 "$candidate/install.log" >&2
+    if grep -Eq 'gyp ERR!|make:.*not found|[Cc]ompiler.*not found' "$candidate/install.log" \
+      && { ! command -v python3 >/dev/null 2>&1 || ! command -v make >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; }; then
+      system_tools
+      npm_install >>"$candidate/install.log" 2>&1 || { tail -n 35 "$candidate/install.log" >&2; fail 'npm installation failed; see install.log above.'; }
+    else
+      fail 'npm could not install the runtime dependencies. See install.log above; network failures may include the ripgrep binary download from GitHub. Retrying is safe.'
+    fi
+  fi
+  write_launcher
+  say 'Checking the installed application'
+  smoke >>"$candidate/install.log" 2>&1 || { tail -n 35 "$candidate/install.log" >&2; fail 'Application verification failed.'; }
+  export PATH="$caller_path"
+  umask "$caller_umask"
+  local host_status
+  host_status=$("$candidate/bin/jaiharness" host status) || fail 'The current data home cannot be used by this installation. Stop its existing Host using that installation, or resolve the diagnostic above, then retry.'
+  [ "$host_status" = 'jai host: no managed host' ] || fail 'A Jai host is running. Stop it with its own launcher when its work is finished, then rerun.'
+  publish_install
+  installed=yes
+  configure_path
+  cd "$start_dir"
+  say "jaiharness $release_version installed"
+  printf 'Command: %s\n' "$command_path"
+  local resolved_command
+  resolved_command=$(command -v jaiharness || true)
+  if [ -n "$resolved_command" ] && [ "$resolved_command" != "$command_path" ]; then
+    printf 'This shell currently finds %s first. Use the command path above or open a new terminal.\n' "$resolved_command"
+  fi
+  if [ "$skip_setup" = no ] && [ "$terminal" = yes ]; then
+    "$command_path" setup </dev/tty >/dev/tty
+  else
+    printf 'Model setup is pending. Run: %s setup\n' "$command_path"
+  fi
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Open a new terminal to use the jaiharness command by name.\n' ;; esac
+  cleanup
+}
+
+main "$@"
