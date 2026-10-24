@@ -137,21 +137,26 @@ NODE
 
 publish_install() {
   "$candidate/node/bin/node" --input-type=module - "$prefix" "$candidate" "$command_path" "$chat_path" "$repair_commands" "$chat_available" <<'NODE'
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 const [root, candidate, command, chat, repair, chatAvailable] = process.argv.slice(2);
 function exists(path) { try { return lstatSync(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } }
+const replacingChat = chatAvailable === 'replace';
+const oldChat = exists(chat);
+if (replacingChat && (!oldChat || !(oldChat.isFile() || oldChat.isSymbolicLink()))) {
+  throw new Error(`Refusing to replace a missing command or directory: ${chat}`);
+}
 const commands = [[command, join(root, 'current/bin/jaiharness')]];
-if (chatAvailable === 'yes') commands.push([chat, join(root, 'bin/jaicli')]);
+if (chatAvailable !== 'no') commands.push([chat, join(root, 'bin/jaicli')]);
 for (const [path, target] of commands) {
   const entry = exists(path);
-  if (entry && (!entry.isSymbolicLink() || readlinkSync(path) !== target)) throw new Error(`Refusing to replace ${path}`);
+  if (entry && !(replacingChat && path === chat) && (!entry.isSymbolicLink() || readlinkSync(path) !== target)) throw new Error(`Refusing to replace ${path}`);
 }
 const current = join(root, 'current');
 const previous = exists(current);
 if (previous && !previous.isSymbolicLink()) throw new Error(`Refusing to replace ${current}`);
 if (repair === 'yes' && (!previous || realpathSync(current) !== candidate)) throw new Error('The active installation changed; retry command repair.');
-if (chatAvailable === 'yes') {
+if (chatAvailable !== 'no') {
   mkdirSync(join(root, 'bin'), { recursive: true });
   const launcher = join(root, 'bin/jaicli');
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -165,8 +170,26 @@ if (chatAvailable === 'yes') {
 }
 const pending = join(root, `.current-next-${basename(candidate)}`);
 const created = [];
+let backup;
+let replacedChat = false;
+let createdPendingChat = false;
+const pendingChat = `${chat}.next-${process.pid}`;
 if (repair !== 'yes') symlinkSync(candidate, pending);
 try {
+  if (replacingChat) {
+    mkdirSync(join(root, 'backups'), { recursive: true });
+    backup = join(mkdtempSync(join(root, 'backups/jaicli-')), 'jaicli');
+    if (oldChat.isSymbolicLink()) symlinkSync(readlinkSync(chat), backup);
+    else copyFileSync(chat, backup, constants.COPYFILE_EXCL);
+    symlinkSync(join(root, 'bin/jaicli'), pendingChat);
+    createdPendingChat = true;
+    const latest = exists(chat);
+    if (!latest || latest.ino !== oldChat.ino || latest.dev !== oldChat.dev || latest.mtimeMs !== oldChat.mtimeMs) {
+      throw new Error('The jaicli command changed during installation; retry.');
+    }
+    renameSync(pendingChat, chat);
+    replacedChat = true;
+  }
   for (const [path, target] of commands) {
     if (!exists(path)) { symlinkSync(target, path); created.push([path, target]); }
   }
@@ -176,8 +199,11 @@ try {
   for (const [path, target] of created) {
     if (exists(path)?.isSymbolicLink() && readlinkSync(path) === target) unlinkSync(path);
   }
+  if (createdPendingChat && exists(pendingChat)) unlinkSync(pendingChat);
+  if (replacedChat && exists(chat)?.isSymbolicLink() && readlinkSync(chat) === join(root, 'bin/jaicli')) renameSync(backup, chat);
   throw error;
 }
+if (backup) console.log(`Previous jaicli shortcut saved to ${backup}`);
 NODE
 }
 
@@ -197,14 +223,14 @@ main() {
   local caller_umask caller_path=$PATH
   caller_umask=$(umask)
   umask 077
-  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.8/jaysteelmind-jaiharness-0.1.0-rc.8.tgz'
-  local archive_hash='1938fddcd229bda8803405f0f0d0a16b4e760437d9b8962a2671369cccfedf7f'
-  local release_version='0.1.0-rc.8'
+  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.9/jaysteelmind-jaiharness-0.1.0-rc.9.tgz'
+  local archive_hash='3620f308ad6421c8848761f1d2f66b4fd714efbcb8f4880ce4043b7d20562962'
+  local release_version='0.1.0-rc.9'
   local node_version=v24.22.1
   # Bash 5 can unwind main's locals before its EXIT trap after a failed command.
   prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no
   command_path="$HOME/.local/bin/jaiharness" repair_commands=no
-  local chat_path="$HOME/.local/bin/jaicli" chat_available=yes
+  local chat_path="$HOME/.local/bin/jaicli" chat_available=yes replace_jaicli=no
   local terminal=no modify_path=yes skip_setup=no install_system_deps=no start_dir=$PWD
   local os arch node_hash node_archive reply
   while [ "$#" -gt 0 ]; do
@@ -213,8 +239,9 @@ main() {
       --no-modify-path) modify_path=no ;;
       --install-system-deps) install_system_deps=yes ;;
       --repair-commands) repair_commands=yes ;;
+      --replace-jaicli) replace_jaicli=yes ;;
       --help|-h)
-        printf 'Usage: bash install.sh [--skip-setup] [--no-modify-path] [--install-system-deps] [--repair-commands]\nInstalls jaiharness and jaicli for your account; --repair-commands repairs existing launch commands without downloading or restarting. JAI_INSTALL_DIR overrides the installation directory.\n'
+        printf 'Usage: bash install.sh [--skip-setup] [--no-modify-path] [--install-system-deps] [--repair-commands] [--replace-jaicli]\nInstalls jaiharness and jaicli for your account; --repair-commands repairs existing launch commands without downloading or restarting. --replace-jaicli backs up and replaces an existing chat command. JAI_INSTALL_DIR overrides the installation directory.\n'
         return ;;
       *) fail "Unknown option: $1" ;;
     esac
@@ -254,9 +281,19 @@ main() {
   fi
   if { [ -e "$chat_path" ] || [ -L "$chat_path" ]; } \
     && { [ ! -L "$chat_path" ] || [ "$(readlink "$chat_path")" != "$prefix/bin/jaicli" ]; }; then
-    [ "$repair_commands" = no ] || fail "An unrelated command already exists: $chat_path. It was left unchanged; use jaiharness tui."
-    printf 'jaicli already exists and was left unchanged; use jaiharness tui.\n'
-    chat_available=no
+    [ ! -d "$chat_path" ] || [ -L "$chat_path" ] || fail "The chat command path is a directory: $chat_path"
+    if [ "$replace_jaicli" = no ] && [ "$terminal" = yes ]; then
+      printf 'An existing chat command is at %s.\nBack it up and replace it with jaiharness chat? [y/N] ' "$chat_path" >/dev/tty
+      read -r reply </dev/tty || reply=''
+      case "$reply" in y|Y|yes|YES) replace_jaicli=yes ;; esac
+    fi
+    if [ "$replace_jaicli" = yes ]; then
+      chat_available=replace
+    else
+      [ "$repair_commands" = no ] || fail "An unrelated command already exists: $chat_path. Use jaiharness tui, or rerun with --repair-commands --replace-jaicli to back it up and replace it."
+      printf 'jaicli already exists and was left unchanged; use jaiharness tui.\n'
+      chat_available=no
+    fi
   fi
   mkdir -p "$prefix/versions" "$HOME/.local/bin"
   if [ "$repair_commands" = yes ]; then
@@ -337,7 +374,7 @@ NODE
   cd "$start_dir"
   say "jaiharness $release_version installed"
   printf 'Command: %s\n' "$command_path"
-  if [ "$chat_available" = yes ]; then printf 'Chat command: %s\n' "$chat_path"; fi
+  if [ "$chat_available" != no ]; then printf 'Chat command: %s\n' "$chat_path"; fi
   local resolved_command
   resolved_command=$(command -v jaiharness || true)
   if [ -n "$resolved_command" ] && [ "$resolved_command" != "$command_path" ]; then
@@ -347,6 +384,10 @@ NODE
     "$command_path" setup </dev/tty >/dev/tty
   else
     printf 'Model setup is pending. Run: %s setup\n' "$command_path"
+  fi
+  if [ "$chat_available" = no ]; then
+    printf '\nYour existing jaicli was kept. Start chatting with: %s tui\n' "$command_path"
+    printf 'To back up and replace that shortcut:\ncurl -fsSL https://jaysteelmind.github.io/jaiharness-install/install.sh | bash -s -- --repair-commands --replace-jaicli\n'
   fi
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) printf 'Open a new terminal to use the jaiharness command by name.\n' ;; esac
   cleanup
