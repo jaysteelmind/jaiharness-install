@@ -2,6 +2,8 @@
 
 Public installer and application downloads for jaiharness, a local agent harness with terminal and browser interfaces.
 
+Latest application: [0.1.0-rc.8](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.8), with instruction-budget, model-switch compaction, shell, SDK and highlighting fixes.
+
 ## Install
 
 Run this command in a terminal:
