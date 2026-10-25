@@ -2,7 +2,7 @@
 
 Public installer and application downloads for jaiharness, a local agent harness with terminal and browser interfaces.
 
-Latest application: [0.1.0-rc.9](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.9), with clear local/remote setup instructions and repair for conflicting chat shortcuts.
+Latest application: [0.1.0-rc.10](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.10), with a read-only workspace file browser, supported conversation-history upgrades, and shared plugin APIs. The file browser previews text, images, PDF and Office documents and supports downloads; local workspaces refresh automatically, while SSH workspaces use their configured remote filesystem.
 
 ## Install
 
