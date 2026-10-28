@@ -2,7 +2,11 @@
 
 Public installer and application downloads for jaiharness, a local agent harness with terminal and browser interfaces.
 
-Latest application: [0.1.0-rc.10](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.10), with a read-only workspace file browser, supported conversation-history upgrades, and shared plugin APIs. The file browser previews text, images, PDF and Office documents and supports downloads; local workspaces refresh automatically, while SSH workspaces use their configured remote filesystem.
+Latest application: [0.1.0-rc.11](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.11), with docked conversations, files, previews and interactive terminals; searchable plugin catalogs and controlled updates; saved rich drafts, message quoting, and file/folder/session references. Conversation turns include file-change review and links to delivered files. Long conversations have turn navigation and retained reading state.
+
+This release also improves model-provider integration and recovery from image-budget limits. Ordinary conversation forks remain available when their original conversation is deleted. Shared `~/.agents/AGENTS.md` instructions load alongside Jai’s own global instructions.
+
+For local workspaces, the shared instruction file also applies on resume; set `JAI_AGENTS_HOME` to a dedicated directory without `AGENTS.md` to exclude it. Deleting an original conversation preserves its full tool-output files until its last dependent conversation is deleted.
 
 ## Install
 
