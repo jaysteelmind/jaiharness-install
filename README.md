@@ -2,11 +2,15 @@
 
 Public installer and application downloads for jaiharness, a local agent harness with terminal and browser interfaces.
 
-Latest application: [0.1.0-rc.11](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.11), with docked conversations, files, previews and interactive terminals; searchable plugin catalogs and controlled updates; saved rich drafts, message quoting, and file/folder/session references. Conversation turns include file-change review and links to delivered files. Long conversations have turn navigation and retained reading state.
+Latest application: [0.1.0-rc.12](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.12), with PowerPoint and spreadsheet authoring, validation and delivery; richer document previews; helper-model settings; an optional browser team task board; and mouse-wheel scrolling in terminal chat.
 
-This release also improves model-provider integration and recovery from image-budget limits. Ordinary conversation forks remain available when their original conversation is deleted. Shared `~/.agents/AGENTS.md` instructions load alongside Jai’s own global instructions.
+Conversations, files, previews and interactive terminals can stay open in docked panels. Plugin catalogs support search and controlled updates. Rich drafts retain quotes and file/folder/session references, and completed turns show file changes and delivered files. Ordinary conversation forks survive deletion of their original conversation. Shared `~/.agents/AGENTS.md` instructions load alongside Jai's own global instructions.
 
 For local workspaces, the shared instruction file also applies on resume; set `JAI_AGENTS_HOME` to a dedicated directory without `AGENTS.md` to exclude it. Deleting an original conversation preserves its full tool-output files until its last dependent conversation is deleted.
+
+In terminal chat, use the wheel to scroll, Shift-drag for text selection where supported, or `/copy` to hold a selectable page. `jaicli --no-mouse` disables mouse capture.
+
+Helpers may use a different reasoning effort on the conversation's model. Choosing other models requires enabling Helper models in Settings; this applies to new conversations.
 
 ## Install
 
@@ -16,9 +20,11 @@ Run this command in a terminal:
 curl -fsSL https://jaysteelmind.github.io/jaiharness-install/install.sh | bash
 ```
 
-The installer downloads verified Node, pnpm and application packages for your account, checks application startup, then walks you through choosing a model provider. You do not need Node, Git or a GitHub login beforehand. The initial command requires Bash and curl.
+The installer downloads verified Node, pnpm, Office Python and application packages for your account, checks application startup, then walks you through choosing a model provider. You do not need Node, Git or a GitHub login beforehand. The initial command requires Bash and curl.
 
-Supported systems are macOS 13.5+ and glibc Linux 2.28+ with kernel 4.18+, on x64 or ARM64. On Windows, use WSL2. Alpine/musl and native Windows are outside this Bash installer. Missing native build tools can be installed with your consent through apt or dnf; macOS may require Apple's Command Line Tools dialog and a retry.
+Requires macOS 13.5+ or glibc Linux 2.28+ with kernel 4.18+. Release installation is tested on macOS 15 ARM64 and Ubuntu 24.04 x64/ARM64. The installer also targets Intel Macs, but their Office runtime installation has not been validated for this release. On Windows, use WSL2. Alpine/musl and native Windows are outside this Bash installer. Missing native build tools can be installed with your consent through apt or dnf; macOS may require Apple's Command Line Tools dialog and a retry.
+
+Office authoring downloads a pinned private Python runtime from GitHub release assets and libraries from files.pythonhosted.org. The prepared payload is about 170 MB on macOS ARM64; sizes vary by platform. Preparation is required: a failure stops installation before activation and preserves an existing version. Reinstall or update to add it to an older installation.
 
 Choose a hosted provider or an OpenAI-compatible model server. API keys are hidden while typing; servers without authentication accept an empty key. Setup can send a short model test. Model-server hosting, model weights and optional browser/desktop capabilities have their own requirements.
 

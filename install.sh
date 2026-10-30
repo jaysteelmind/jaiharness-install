@@ -108,6 +108,7 @@ write_launcher() {
   {
     printf '#!/usr/bin/env bash\n'
     printf 'install_dir=%q\n' "$candidate"
+    printf 'export JAI_PRIMARY_RUNTIME="${JAI_PRIMARY_RUNTIME-$install_dir/resources/primary-runtime}"\n'
     printf 'export PATH="$PATH:$install_dir/node/bin:$install_dir/tools/bin"\n'
     printf 'exec "$install_dir/node/bin/node" "$install_dir/app/node_modules/@jaysteelmind/jaiharness/bin/jaiharness.mjs" "$@"\n'
   } >"$candidate/bin/jaiharness"
@@ -223,9 +224,9 @@ main() {
   local caller_umask caller_path=$PATH
   caller_umask=$(umask)
   umask 077
-  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.11/jaysteelmind-jaiharness-0.1.0-rc.11.tgz'
-  local archive_hash='7dc125dd1d2a4bc6d04487e1cac54d0100dc745b6ffb838b4cb87cf5733a9510'
-  local release_version='0.1.0-rc.11'
+  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.12/jaysteelmind-jaiharness-0.1.0-rc.12.tgz'
+  local archive_hash='341fc3ebdfb3a770dc8a3ddd409e3ef88ecfe67dd85ae1759797979590374ab9'
+  local release_version='0.1.0-rc.12'
   local node_version=v24.22.1
   # Bash 5 can unwind main's locals before its EXIT trap after a failed command.
   prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no
@@ -360,6 +361,10 @@ NODE
       fail 'npm could not install the runtime dependencies. See install.log above; network failures may include the ripgrep binary download from GitHub. Retrying is safe.'
     fi
   fi
+  say 'Installing private Python and Office authoring libraries'
+  "$candidate/node/bin/node" "$candidate/app/node_modules/@jaysteelmind/jaiharness/node_modules/@jai-ai/jai-tool-workspace-dependencies/lib/prepare-office.js" \
+    --output "$candidate/resources" --cache "$candidate/downloads/office" \
+    >>"$candidate/install.log" 2>&1 || { tail -n 35 "$candidate/install.log" >&2; fail 'Office runtime preparation failed; the previous installation remains active.'; }
   write_launcher
   say 'Checking the installed application'
   smoke >>"$candidate/install.log" 2>&1 || { tail -n 35 "$candidate/install.log" >&2; fail 'Application verification failed.'; }
