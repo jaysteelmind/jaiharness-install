@@ -224,9 +224,9 @@ main() {
   local caller_umask caller_path=$PATH
   caller_umask=$(umask)
   umask 077
-  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.13/jaysteelmind-jaiharness-0.1.0-rc.13.tgz'
-  local archive_hash='8713d5f307404040c85e0aab25d867f0dddd0d81733147028c0575083e9f60ca'
-  local release_version='0.1.0-rc.13'
+  local archive_url='https://github.com/jaysteelmind/jaiharness-install/releases/download/v0.1.0-rc.14/jaysteelmind-jaiharness-0.1.0-rc.14.tgz'
+  local archive_hash='018d19cea2e7bd529b200fb9cdd59b34cb95d6a8709394406be39ad4ac931a03'
+  local release_version='0.1.0-rc.14'
   local node_version=v24.22.1
   # Bash 5 can unwind main's locals before its EXIT trap after a failed command.
   prefix="${JAI_INSTALL_DIR:-$HOME/.local/share/jaiharness}" candidate='' locked=no installed=no

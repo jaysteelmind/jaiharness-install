@@ -2,13 +2,13 @@
 
 Public installer and application downloads for jaiharness, a local agent harness with terminal and browser interfaces.
 
-Latest application: [0.1.0-rc.13](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.13), with drag selection and edge auto-scroll in terminal chat, including tmux. This release also includes upstream reliability improvements for Markdown links, credential reads, skill discovery and conversation controls.
+Latest application: [0.1.0-rc.14](https://github.com/jaysteelmind/jaiharness-install/releases/tag/v0.1.0-rc.14), with a single compact terminal footer that adapts to narrow windows without side padding or expanding gaps.
 
 Conversations, files, previews and interactive terminals can stay open in docked panels. Plugin catalogs support search and controlled updates. Rich drafts retain quotes and file/folder/session references, and completed turns show file changes and delivered files. Ordinary conversation forks survive deletion of their original conversation. Shared `~/.agents/AGENTS.md` instructions load alongside Jai's own global instructions.
 
 For local workspaces, the shared instruction file also applies on resume; set `JAI_AGENTS_HOME` to a dedicated directory without `AGENTS.md` to exclude it. Deleting an original conversation preserves its full tool-output files until its last dependent conversation is deleted.
 
-In terminal chat, drag over transcript text, hold beyond its edge to auto-scroll, and release to copy. Selection works in native terminal sessions and tmux; tmux receives its own paste buffer and requests the outer clipboard. Native clipboard access depends on the terminal and desktop environment. Ctrl+C and Escape retain their cancellation and navigation behavior. `jaicli --selection-scroll-interval MILLISECONDS` sets the auto-scroll cadence. Use the wheel to scroll, `/copy` to hold a selectable page, or `jaicli --no-mouse` to leave selection to the terminal.
+In terminal chat, use the wheel to scroll, your terminal's selection modifier (commonly Shift-drag) to select, `/copy` to hold a selectable page, or `jaicli --no-mouse` to leave selection to the terminal. A multiplexer can intercept gestures. Clipboard access depends on the terminal and desktop environment.
 
 Helpers may use a different reasoning effort on the conversation's model. Choosing other models requires enabling Helper models in Settings; this applies to new conversations.
 
